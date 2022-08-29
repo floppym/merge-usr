@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import errno
+import fnmatch
 import logging
 import os
 import os.path
@@ -12,8 +13,26 @@ import stat
 import sys
 import tempfile
 
+DIR_MAP = {
+    "bin": "usr/bin",
+    "sbin": "usr/bin",
+    "usr/sbin": "usr/bin",
+    "lib": "usr/lib",
+    "lib32": "usr/lib32",
+    "lib64": "usr/lib64",
+    "libx32": "usr/libx32",
+}
+
+IGNORE_PATTERNS = (
+    ".keep*",
+)
+
 args = None
 logger = logging.getLogger(__name__)
+errors = []
+
+def ignore_name(name):
+    return any((fnmatch.fnmatch(name, pattern) for pattern in IGNORE_PATTERNS))
 
 def resolve_symlinks(path):
     try:
@@ -96,83 +115,78 @@ def ensure_directory(path):
     else:
         os.chmod(path, 0o0755)
 
+def log_error(filetype, path, error):
+    errors.append((filetype, path, error))
+    logger.error("Copying %s '%s': %s", filetype, path, error)
+
 def copy_tree(srcdir, dstdir):
-    error_free = True
     with os.scandir(srcdir) as entries:
         for entry in entries:
+            if ignore_name(entry.name):
+                continue
             src = os.path.join(srcdir, entry.name)
             dst = os.path.join(dstdir, entry.name)
             if entry.is_symlink():
                 try:
                     copy_symlink(src, dst)
                 except Exception as e:
-                    error_free = False
-                    logger.exception("sym  %s", src)
+                    log_error("symlink", src, e)
             elif entry.is_file(follow_symlinks=False):
-                if not entry.name.startswith(".keep"):
-                    try:
-                        link_or_copy_file(src, dst)
-                    except Exception as e:
-                        error_free = False
-                        logger.exception("file %s", src)
+                try:
+                    link_or_copy_file(src, dst)
+                except Exception as e:
+                    log_error("file", src, e)
             elif entry.is_dir(follow_symlinks=False):
-                if args.dryrun:
-                    try:
-                        if check_directory(dst):
-                            copy_tree(src, dst)
-                    except Exception as e:
-                        error_free = False
-                        logger.exception("dir %s", src)
-                else:
-                    try:
-                        ensure_directory(dst)
-                        error_free = copy_tree(src, dst) and error_free
-                    except Exception as e:
-                        error_free = False
-                        logger.exception("dir %s", src)
-                        raise
+                try:
+                    ensure_directory(dst)
+                    copy_tree(src, dst)
+                except Exception as e:
+                    log_error("directory", src, e)
             else:
-                error_free = False
-                logger.error("special %s", src)
-    return error_free
+                log_error("special", src, "Copying special files is not supported")
 
 
 def merge_usr():
-    dirmap = {
-        "bin": "usr/bin",
-        "sbin": "usr/bin",
-        "usr/sbin": "bin",
-        "lib": "usr/lib",
-        "lib32": "usr/lib32",
-        "lib64": "usr/lib64",
-        "libx32": "usr/libx32",
-    }
-    for x in dirmap:
+    for x in DIR_MAP:
         src = os.path.join(args.root, args.prefix, x)
+        dst = os.path.join(args.root, args.prefix, DIR_MAP[x])
+
         if os.path.islink(src):
-            logger.warning("Already a symlink: %s", src)
+            logger.warning("Already a symlink: '%s'", src)
             continue
+
+        if not os.path.exists(src):
+            continue
+
         if not os.path.isdir(src):
+            logger.warning("Not a directory: '%s'", src)
             continue
-        target = dirmap[x]
-        dst = os.path.join(os.path.dirname(src), target)
-        if copy_tree(src, dst) and not args.dryrun:
+
+        copy_tree(src, dst)
+
+        if not errors and not args.dryrun:
+            target = os.path.relpath(dst, src)
             tmp = tempfile.mktemp(dir=os.path.dirname(src))
             os.rename(src, tmp)
             os.symlink(target, src)
             shutil.rmtree(tmp)
 
 def main():
-    global args
+    logging.basicConfig()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--dryrun", action=argparse.BooleanOptionalAction)
     parser.add_argument("--root")
     parser.add_argument("--prefix")
+
+    global args
     args = parser.parse_args()
+
     if args.root is None:
         args.root = "/"
     else:
         args.root = args.root.rstrip("/") + "/"
+
     if args.prefix is None:
         args.prefix = ""
     else:
