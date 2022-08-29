@@ -150,7 +150,6 @@ class MergeUsr:
                             self.copy_symlink(src, dst)
                 elif entry.is_file(follow_symlinks=False):
                     try:
-                        self.log_compare("file", src, dst)
                         self.check_file(src, dst)
                     except Exception as e:
                         self.log_error("file", src, e)
