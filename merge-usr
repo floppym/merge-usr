@@ -37,8 +37,24 @@ def replace_with_symlink(src, dst):
     os.symlink(target, tmp)
     os.rename(tmp, src)
 
+def check_directory(path):
+    if os.path.exists(path) and not os.path.isdir(path):
+        raise_exists(path)
+
+def ensure_directory(path):
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        if not os.path.isdir(path):
+            raise
+    else:
+        os.chmod(path, 0o0755)
+
+class SkipSymlink(Exception):
+    pass
+
 class MergeUsr:
-    def __init__(self, dryrun, root, prefix, dirmap, ignore_patterns):
+    def __init__(self, dryrun, root, prefix, dirmap, ignore_patterns, loglevel=logging.WARNING):
         self.dryrun = dryrun
         self.root = root
         self.prefix = prefix
@@ -46,6 +62,7 @@ class MergeUsr:
         self.ignore_patterns = ignore_patterns
         self.errors = []
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(loglevel)
 
     def ignore_name(self, name):
         return any((fnmatch.fnmatch(name, pattern) for pattern in self.ignore_patterns))
@@ -64,20 +81,26 @@ class MergeUsr:
         try:
             st = os.lstat(dst)
         except FileNotFoundError:
-            return True
+            return
         if stat.S_ISLNK(st.st_mode):
             dst = self.resolve_symlinks(dst)
         if src_is_symlink:
             src = self.resolve_symlinks(src)
-        if src != dst and not os.path.samefile(src, dst):
+        if src == dst or os.path.samefile(src, dst):
+            if src_is_symlink:
+                raise SkipSymlink()
+        else:
             raise_exists(dst)
-        return not src_is_symlink
+
+    def check_symlink(self, src, dst):
+        self.log_compare("symlink", src, dst)
+        self.check_object(src, dst, True)
+
+    def check_file(self, src, dst):
+        self.log_compare("file", src, dst)
+        self.check_object(src, dst, False)
 
     def copy_symlink(self, src, dst):
-        if not self.check_object(src, dst, True):
-            return
-        if self.dryrun:
-            return
         srcdir = os.path.dirname(src)
         dstdir = os.path.dirname(dst)
         target = os.readlink(src)
@@ -91,10 +114,6 @@ class MergeUsr:
         os.symlink(target, dst)
 
     def link_or_copy_file(self, src, dst):
-        if not self.check_object(src, dst, False):
-            return
-        if self.dryrun:
-            return
         tmp = tempfile.mktemp(dir=os.path.dirname(dst))
         try:
             os.link(src, tmp, follow_symlinks=False)
@@ -105,18 +124,8 @@ class MergeUsr:
         os.rename(tmp, dst)
         replace_with_symlink(src, dst)
 
-    def ensure_directory(self, path):
-        if self.dryrun:
-            if os.path.exists(path) and not os.path.isdir(path):
-                raise_exists(path)
-        else:
-            try:
-                os.mkdir(path)
-            except FileExistsError:
-                if not os.path.isdir(path):
-                    raise
-            else:
-                os.chmod(path, 0o0755)
+    def log_compare(self, filetype, src, dst):
+        self.logger.info("Comparing %s '%s' to '%s'", filetype, src, dst)
 
     def log_error(self, filetype, path, error):
         self.errors.append((filetype, path, error))
@@ -131,22 +140,34 @@ class MergeUsr:
                 dst = os.path.join(dstdir, entry.name)
                 if entry.is_symlink():
                     try:
-                        self.copy_symlink(src, dst)
+                        self.check_symlink(src, dst)
+                    except SkipSymlink:
+                        self.logger.warning("Skipping symlink '%s'", src)
                     except Exception as e:
                         self.log_error("symlink", src, e)
+                    else:
+                        if not self.dryrun:
+                            self.copy_symlink(src, dst)
                 elif entry.is_file(follow_symlinks=False):
                     try:
-                        self.link_or_copy_file(src, dst)
+                        self.log_compare("file", src, dst)
+                        self.check_file(src, dst)
                     except Exception as e:
                         self.log_error("file", src, e)
+                    else:
+                        if not self.dryrun:
+                            self.link_or_copy_file(src, dst)
                 elif entry.is_dir(follow_symlinks=False):
                     try:
-                        self.ensure_directory(dst)
-                        self.copy_tree(src, dst)
+                        check_directory(dst)
                     except Exception as e:
                         self.log_error("directory", src, e)
+                    else:
+                        if not self.dryrun:
+                            ensure_directory(dst)
+                        self.copy_tree(src, dst)
                 else:
-                    self.log_error("special", src, "Copying special files is not supported")
+                    self.log_error("special file", src, "Special files are not supported")
 
     def run(self):
         for d in self.dirmap:
@@ -180,8 +201,13 @@ def main():
     parser.add_argument("--dryrun", action=argparse.BooleanOptionalAction)
     parser.add_argument("--root")
     parser.add_argument("--prefix")
+    parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
+
+    loglevel = logging.WARNING
+    if args.verbose:
+        loglevel = logging.INFO
 
     root = args.root
     if root is None:
@@ -196,7 +222,7 @@ def main():
         prefix = prefix.lstrip("/")
 
     os.umask(0o077)
-    MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS).run()
+    MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS, loglevel=loglevel).run()
 
 if __name__ == "__main__":
     main()
