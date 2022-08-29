@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+import argparse
+import contextlib
+import errno
+import logging
+import os
+import os.path
+import shutil
+import stat
+import sys
+import tempfile
+
+args = None
+logger = logging.getLogger(__name__)
+
+def resolve_symlinks(path):
+    try:
+        target = os.readlink(path)
+    except OSError:
+        pass
+    else:
+        if os.path.isabs(target):
+            path = os.path.join(args.root, os.path.relpath(target, "/"))
+    return os.path.realpath(path)
+
+def raise_exists(path):
+    raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
+
+def check_object(src, dst, src_is_symlink):
+    try:
+        st = os.lstat(dst)
+    except FileNotFoundError:
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        dst = resolve_symlinks(dst)
+    if src_is_symlink:
+        src = resolve_symlinks(src)
+    if src != dst and not os.path.samefile(src, dst):
+        raise_exists(dst)
+    return not src_is_symlink
+
+def copy_symlink(src, dst):
+    if not check_object(src, dst, True):
+        return
+    if args.dryrun:
+        return
+    srcdir = os.path.dirname(src)
+    dstdir = os.path.dirname(dst)
+    target = os.readlink(src)
+    if not os.path.isabs(target):
+        t = os.path.join(srcdir, target)
+        t = resolve_symlinks(t)
+        if t.startswith(srcdir):
+            target = os.path.relpath(t, srcdir)
+        else:
+            target = os.path.relpath(t, dstdir)
+    os.symlink(target, dst)
+
+def replace_with_symlink(src, dst):
+    srcdir = os.path.dirname(src)
+    target = os.path.relpath(dst, srcdir)
+    tmp = tempfile.mktemp(dir=srcdir)
+    os.symlink(target, tmp)
+    os.rename(tmp, src)
+
+def link_or_copy_file(src, dst):
+    if not check_object(src, dst, False):
+        return
+    if args.dryrun:
+        return
+    tmp = tempfile.mktemp(dir=os.path.dirname(dst))
+    try:
+        os.link(src, tmp, follow_symlinks=False)
+    except FileExistsError:
+        raise
+    except OSError:
+        shutil.copy2(src, tmp)
+    os.rename(tmp, dst)
+    replace_with_symlink(src, dst)
+
+def check_directory(path):
+    if os.path.exists(path):
+        if os.path.isdir(path):
+            return True
+        raise_exists(dst)
+    return False
+
+def ensure_directory(path):
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        if not os.path.isdir(path):
+            raise
+    else:
+        os.chmod(path, 0o0755)
+
+def copy_tree(srcdir, dstdir):
+    error_free = True
+    with os.scandir(srcdir) as entries:
+        for entry in entries:
+            src = os.path.join(srcdir, entry.name)
+            dst = os.path.join(dstdir, entry.name)
+            if entry.is_symlink():
+                try:
+                    copy_symlink(src, dst)
+                except Exception as e:
+                    error_free = False
+                    logger.exception("sym  %s", src)
+            elif entry.is_file(follow_symlinks=False):
+                if not entry.name.startswith(".keep"):
+                    try:
+                        link_or_copy_file(src, dst)
+                    except Exception as e:
+                        error_free = False
+                        logger.exception("file %s", src)
+            elif entry.is_dir(follow_symlinks=False):
+                if args.dryrun:
+                    try:
+                        if check_directory(dst):
+                            copy_tree(src, dst)
+                    except Exception as e:
+                        error_free = False
+                        logger.exception("dir %s", src)
+                else:
+                    try:
+                        ensure_directory(dst)
+                        error_free = copy_tree(src, dst) and error_free
+                    except Exception as e:
+                        error_free = False
+                        logger.exception("dir %s", src)
+                        raise
+            else:
+                error_free = False
+                logger.error("special %s", src)
+    return error_free
+
+
+def merge_usr():
+    dirmap = {
+        "bin": "usr/bin",
+        "sbin": "usr/bin",
+        "usr/sbin": "bin",
+        "lib": "usr/lib",
+        "lib32": "usr/lib32",
+        "lib64": "usr/lib64",
+        "libx32": "usr/libx32",
+    }
+    for x in dirmap:
+        src = os.path.join(args.root, args.prefix, x)
+        if os.path.islink(src):
+            logger.warning("Already a symlink: %s", src)
+            continue
+        if not os.path.isdir(src):
+            continue
+        target = dirmap[x]
+        dst = os.path.join(os.path.dirname(src), target)
+        if copy_tree(src, dst) and not args.dryrun:
+            tmp = tempfile.mktemp(dir=os.path.dirname(src))
+            os.rename(src, tmp)
+            os.symlink(target, src)
+            shutil.rmtree(tmp)
+
+def main():
+    global args
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dryrun", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--root")
+    parser.add_argument("--prefix")
+    args = parser.parse_args()
+    if args.root is None:
+        args.root = "/"
+    else:
+        args.root = args.root.rstrip("/") + "/"
+    if args.prefix is None:
+        args.prefix = ""
+    else:
+        args.prefix = args.prefix.lstrip("/")
+
+    os.umask(0o077)
+    merge_usr()
+
+if __name__ == "__main__":
+    main()
