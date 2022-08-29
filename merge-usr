@@ -237,11 +237,11 @@ def main():
         prefix = prefix.lstrip("/")
 
     os.umask(0o077)
-    mu = MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS, loglevel=loglevel)
 
-    if mu.run():
-        return 0
-    return 1
+    mu = MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS, loglevel=loglevel)
+    if not mu.run():
+        return 1
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
