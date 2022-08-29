@@ -27,55 +27,8 @@ IGNORE_PATTERNS = (
     ".keep*",
 )
 
-args = None
-logger = logging.getLogger(__name__)
-errors = []
-
-def ignore_name(name):
-    return any((fnmatch.fnmatch(name, pattern) for pattern in IGNORE_PATTERNS))
-
-def resolve_symlinks(path):
-    try:
-        target = os.readlink(path)
-    except OSError:
-        pass
-    else:
-        if os.path.isabs(target):
-            path = os.path.join(args.root, os.path.relpath(target, "/"))
-    return os.path.realpath(path)
-
 def raise_exists(path):
     raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
-
-def check_object(src, dst, src_is_symlink):
-    try:
-        st = os.lstat(dst)
-    except FileNotFoundError:
-        return True
-    if stat.S_ISLNK(st.st_mode):
-        dst = resolve_symlinks(dst)
-    if src_is_symlink:
-        src = resolve_symlinks(src)
-    if src != dst and not os.path.samefile(src, dst):
-        raise_exists(dst)
-    return not src_is_symlink
-
-def copy_symlink(src, dst):
-    if not check_object(src, dst, True):
-        return
-    if args.dryrun:
-        return
-    srcdir = os.path.dirname(src)
-    dstdir = os.path.dirname(dst)
-    target = os.readlink(src)
-    if not os.path.isabs(target):
-        t = os.path.join(srcdir, target)
-        t = resolve_symlinks(t)
-        if t.startswith(srcdir):
-            target = os.path.relpath(t, srcdir)
-        else:
-            target = os.path.relpath(t, dstdir)
-    os.symlink(target, dst)
 
 def replace_with_symlink(src, dst):
     srcdir = os.path.dirname(src)
@@ -84,92 +37,141 @@ def replace_with_symlink(src, dst):
     os.symlink(target, tmp)
     os.rename(tmp, src)
 
-def link_or_copy_file(src, dst):
-    if not check_object(src, dst, False):
-        return
-    if args.dryrun:
-        return
-    tmp = tempfile.mktemp(dir=os.path.dirname(dst))
-    try:
-        os.link(src, tmp, follow_symlinks=False)
-    except FileExistsError:
-        raise
-    except OSError:
-        shutil.copy2(src, tmp)
-    os.rename(tmp, dst)
-    replace_with_symlink(src, dst)
+class MergeUsr:
+    def __init__(self, dryrun, root, prefix, dirmap, ignore_patterns):
+        self.dryrun = dryrun
+        self.root = root
+        self.prefix = prefix
+        self.dirmap = dirmap
+        self.ignore_patterns = ignore_patterns
+        self.errors = []
+        self.logger = logging.getLogger(__name__)
 
-def check_directory(path):
-    if os.path.exists(path):
-        if os.path.isdir(path):
+    def ignore_name(self, name):
+        return any((fnmatch.fnmatch(name, pattern) for pattern in self.ignore_patterns))
+
+    def resolve_symlinks(self, path):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            pass
+        else:
+            if os.path.isabs(target):
+                path = os.path.join(self.root, os.path.relpath(target, "/"))
+        return os.path.realpath(path)
+
+    def check_object(self, src, dst, src_is_symlink):
+        try:
+            st = os.lstat(dst)
+        except FileNotFoundError:
             return True
-        raise_exists(dst)
-    return False
+        if stat.S_ISLNK(st.st_mode):
+            dst = self.resolve_symlinks(dst)
+        if src_is_symlink:
+            src = self.resolve_symlinks(src)
+        if src != dst and not os.path.samefile(src, dst):
+            raise_exists(dst)
+        return not src_is_symlink
 
-def ensure_directory(path):
-    try:
-        os.mkdir(path)
-    except FileExistsError:
-        if not os.path.isdir(path):
-            raise
-    else:
-        os.chmod(path, 0o0755)
-
-def log_error(filetype, path, error):
-    errors.append((filetype, path, error))
-    logger.error("Copying %s '%s': %s", filetype, path, error)
-
-def copy_tree(srcdir, dstdir):
-    with os.scandir(srcdir) as entries:
-        for entry in entries:
-            if ignore_name(entry.name):
-                continue
-            src = os.path.join(srcdir, entry.name)
-            dst = os.path.join(dstdir, entry.name)
-            if entry.is_symlink():
-                try:
-                    copy_symlink(src, dst)
-                except Exception as e:
-                    log_error("symlink", src, e)
-            elif entry.is_file(follow_symlinks=False):
-                try:
-                    link_or_copy_file(src, dst)
-                except Exception as e:
-                    log_error("file", src, e)
-            elif entry.is_dir(follow_symlinks=False):
-                try:
-                    ensure_directory(dst)
-                    copy_tree(src, dst)
-                except Exception as e:
-                    log_error("directory", src, e)
+    def copy_symlink(self, src, dst):
+        if not self.check_object(src, dst, True):
+            return
+        if self.dryrun:
+            return
+        srcdir = os.path.dirname(src)
+        dstdir = os.path.dirname(dst)
+        target = os.readlink(src)
+        if not os.path.isabs(target):
+            t = os.path.join(srcdir, target)
+            t = self.resolve_symlinks(t)
+            if t.startswith(srcdir):
+                target = os.path.relpath(t, srcdir)
             else:
-                log_error("special", src, "Copying special files is not supported")
+                target = os.path.relpath(t, dstdir)
+        os.symlink(target, dst)
 
+    def link_or_copy_file(self, src, dst):
+        if not self.check_object(src, dst, False):
+            return
+        if self.dryrun:
+            return
+        tmp = tempfile.mktemp(dir=os.path.dirname(dst))
+        try:
+            os.link(src, tmp, follow_symlinks=False)
+        except FileExistsError:
+            raise
+        except OSError:
+            shutil.copy2(src, tmp)
+        os.rename(tmp, dst)
+        replace_with_symlink(src, dst)
 
-def merge_usr():
-    for x in DIR_MAP:
-        src = os.path.join(args.root, args.prefix, x)
-        dst = os.path.join(args.root, args.prefix, DIR_MAP[x])
+    def ensure_directory(self, path):
+        if self.dryrun:
+            if os.path.exists(path) and not os.path.isdir(path):
+                raise_exists(path)
+        else:
+            try:
+                os.mkdir(path)
+            except FileExistsError:
+                if not os.path.isdir(path):
+                    raise
+            else:
+                os.chmod(path, 0o0755)
 
-        if os.path.islink(src):
-            logger.warning("Already a symlink: '%s'", src)
-            continue
+    def log_error(self, filetype, path, error):
+        self.errors.append((filetype, path, error))
+        self.logger.error("Copying %s '%s': %s", filetype, path, error)
 
-        if not os.path.exists(src):
-            continue
+    def copy_tree(self, srcdir, dstdir):
+        with os.scandir(srcdir) as entries:
+            for entry in entries:
+                if self.ignore_name(entry.name):
+                    continue
+                src = os.path.join(srcdir, entry.name)
+                dst = os.path.join(dstdir, entry.name)
+                if entry.is_symlink():
+                    try:
+                        self.copy_symlink(src, dst)
+                    except Exception as e:
+                        self.log_error("symlink", src, e)
+                elif entry.is_file(follow_symlinks=False):
+                    try:
+                        self.link_or_copy_file(src, dst)
+                    except Exception as e:
+                        self.log_error("file", src, e)
+                elif entry.is_dir(follow_symlinks=False):
+                    try:
+                        self.ensure_directory(dst)
+                        self.copy_tree(src, dst)
+                    except Exception as e:
+                        self.log_error("directory", src, e)
+                else:
+                    self.log_error("special", src, "Copying special files is not supported")
 
-        if not os.path.isdir(src):
-            logger.warning("Not a directory: '%s'", src)
-            continue
+    def run(self):
+        for d in self.dirmap:
+            src = os.path.join(self.root, self.prefix, d)
+            dst = os.path.join(self.root, self.prefix, self.dirmap[d])
 
-        copy_tree(src, dst)
+            if os.path.islink(src):
+                self.logger.warning("Already a symlink: '%s'", src)
+                continue
 
-        if not errors and not args.dryrun:
-            target = os.path.relpath(dst, src)
-            tmp = tempfile.mktemp(dir=os.path.dirname(src))
-            os.rename(src, tmp)
-            os.symlink(target, src)
-            shutil.rmtree(tmp)
+            if not os.path.exists(src):
+                continue
+
+            if not os.path.isdir(src):
+                self.logger.warning("Not a directory: '%s'", src)
+                continue
+
+            self.copy_tree(src, dst)
+
+            if not self.dryrun and not self.errors:
+                target = os.path.relpath(dst, src)
+                tmp = tempfile.mktemp(dir=os.path.dirname(src))
+                os.rename(src, tmp)
+                os.symlink(target, src)
+                shutil.rmtree(tmp)
 
 def main():
     logging.basicConfig()
@@ -179,21 +181,22 @@ def main():
     parser.add_argument("--root")
     parser.add_argument("--prefix")
 
-    global args
     args = parser.parse_args()
 
-    if args.root is None:
-        args.root = "/"
+    root = args.root
+    if root is None:
+        root = "/"
     else:
-        args.root = args.root.rstrip("/") + "/"
+        root = args.root.rstrip("/") + "/"
 
-    if args.prefix is None:
-        args.prefix = ""
+    prefix = args.prefix
+    if prefix is None:
+        prefix = ""
     else:
-        args.prefix = args.prefix.lstrip("/")
+        prefix = prefix.lstrip("/")
 
     os.umask(0o077)
-    merge_usr()
+    MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS).run()
 
 if __name__ == "__main__":
     main()
