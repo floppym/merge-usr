@@ -100,6 +100,7 @@ class MergeUsr:
         self.check_object(src, dst, False)
 
     def copy_symlink(self, src, dst):
+        self.log_copy("symlink", src, dst)
         srcdir = os.path.dirname(src)
         dstdir = os.path.dirname(dst)
         target = os.readlink(src)
@@ -113,6 +114,7 @@ class MergeUsr:
         os.symlink(target, dst)
 
     def link_or_copy_file(self, src, dst):
+        self.log_copy("file", src, dst)
         tmp = tempfile.mktemp(dir=os.path.dirname(dst))
         try:
             os.link(src, tmp, follow_symlinks=False)
@@ -126,9 +128,12 @@ class MergeUsr:
     def log_compare(self, filetype, src, dst):
         self.logger.info("Comparing %s '%s' to '%s'", filetype, src, dst)
 
+    def log_copy(self, filetype, src, dst):
+        self.logger.info("Copying %s '%s' to '%s'", filetype, src, dst)
+
     def log_error(self, filetype, path, error):
         self.errors.append((filetype, path, error))
-        self.logger.error("Copying %s '%s': %s", filetype, path, error)
+        self.logger.error("Conflict for %s '%s': %s", filetype, path, error)
 
     def copy_tree(self, srcdir, dstdir):
         with os.scandir(srcdir) as entries:
@@ -168,6 +173,8 @@ class MergeUsr:
                     self.log_error("special file", src, "Special files are not supported")
 
     def run(self):
+        result = True
+
         for d in self.dirmap:
             src = os.path.join(self.root, self.prefix, d)
             dst = os.path.join(self.root, self.prefix, self.dirmap[d])
@@ -185,12 +192,22 @@ class MergeUsr:
 
             self.copy_tree(src, dst)
 
-            if not self.dryrun and not self.errors:
-                target = os.path.relpath(dst, src)
+            if self.errors:
+                self.logger.error("Leaving '%s' as a directory due to prior errors", src)
+                result = False
+                continue
+
+            if self.dryrun:
+                self.logger.info("No problems found")
+            else:
+                target = os.path.relpath(dst, os.path.dirname(src))
+                self.logger.info("Replacing '%s' with a symlink to '%s'", src, target)
                 tmp = tempfile.mktemp(dir=os.path.dirname(src))
                 os.rename(src, tmp)
                 os.symlink(target, src)
                 shutil.rmtree(tmp)
+
+        return result
 
 def main():
     logging.basicConfig()
@@ -220,7 +237,11 @@ def main():
         prefix = prefix.lstrip("/")
 
     os.umask(0o077)
-    MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS, loglevel=loglevel).run()
+    mu = MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS, loglevel=loglevel)
+
+    if mu.run():
+        return 0
+    return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
