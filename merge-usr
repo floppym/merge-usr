@@ -37,15 +37,18 @@ def replace_with_symlink(src, dst):
     os.rename(tmp, src)
 
 def check_directory(path):
-    if os.path.exists(path) and not os.path.isdir(path):
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(st.st_mode):
         raise_exists(path)
 
 def ensure_directory(path):
     try:
         os.mkdir(path)
     except FileExistsError:
-        if not os.path.isdir(path):
-            raise
+        pass
     else:
         os.chmod(path, 0o0755)
 
