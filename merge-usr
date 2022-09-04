@@ -84,11 +84,13 @@ class MergeUsr:
             st = os.lstat(dst)
         except FileNotFoundError:
             return
+        s = src
+        d = dst
         if stat.S_ISLNK(st.st_mode):
-            dst = self.resolve_symlinks(dst)
+            d = self.resolve_symlinks(dst)
         if src_is_symlink:
-            src = self.resolve_symlinks(src)
-        if src == dst or os.path.samefile(src, dst):
+            s = self.resolve_symlinks(src)
+        if s == d or os.path.samefile(src, dst):
             if src_is_symlink:
                 raise SkipSymlink()
         else:
