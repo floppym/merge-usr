@@ -84,17 +84,24 @@ class MergeUsr:
             st = os.lstat(dst)
         except FileNotFoundError:
             return
-        s = src
-        d = dst
-        if stat.S_ISLNK(st.st_mode):
-            d = self.resolve_symlinks(dst)
-        if src_is_symlink:
-            s = self.resolve_symlinks(src)
+        dst_is_symlink = stat.S_ISLNK(st.st_mode)
+        s = self.resolve_symlinks(src) if src_is_symlink else src
+        d = self.resolve_symlinks(dst) if dst_is_symlink else dst
         if s == d or os.path.samefile(src, dst):
             if src_is_symlink:
                 raise SkipSymlink()
-        else:
-            raise_exists(dst)
+            # Replace symlink with file.
+            return
+        if src_is_symlink and dst_is_symlink:
+            # Check for links like /lib64/lp64d -> .
+            srcdir = os.path.dirname(src)
+            dstdir = os.path.dirname(dst)
+            if s.startswith(srcdir) and d.startswith(dstdir):
+                s = os.path.relpath(s, srcdir)
+                d = os.path.relpath(d, dstdir)
+                if s == d:
+                    raise SkipSymlink()
+        raise_exists(dst)
 
     def check_symlink(self, src, dst):
         self.log_compare("symlink", src, dst)
