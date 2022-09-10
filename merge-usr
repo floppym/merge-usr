@@ -217,7 +217,10 @@ class MergeUsr:
                 tmp = tempfile.mktemp(dir=os.path.dirname(src))
                 os.rename(src, tmp)
                 os.symlink(target, src)
-                shutil.rmtree(tmp)
+                try:
+                    shutil.rmtree(tmp)
+                except Exception as e:
+                    self.logger.warning("Unable to remove '%s': %s", tmp, e)
 
         return result
 
