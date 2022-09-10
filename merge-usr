@@ -138,10 +138,10 @@ class MergeUsr:
         replace_with_symlink(src, dst)
 
     def log_compare(self, filetype, src, dst):
-        self.logger.info("Comparing %s '%s' to '%s'", filetype, src, dst)
+        self.logger.debug("Comparing %s '%s' to '%s'", filetype, src, dst)
 
     def log_copy(self, filetype, src, dst):
-        self.logger.info("Copying %s '%s' to '%s'", filetype, src, dst)
+        self.logger.debug("Copying %s '%s' to '%s'", filetype, src, dst)
 
     def log_error(self, filetype, path, error):
         self.errors.append((filetype, path, error))
@@ -202,15 +202,17 @@ class MergeUsr:
                 self.logger.warning("Not a directory: '%s'", src)
                 continue
 
+            self.logger.info("Migrating files from '%s' to '%s'", src, dst)
             self.copy_tree(src, dst)
 
             if self.errors:
                 self.logger.error("Leaving '%s' as a directory due to prior errors", src)
                 result = False
+                self.errors.clear()
                 continue
 
             if self.dryrun:
-                self.logger.info("No problems found")
+                self.logger.info("No problems found for '%s'", src)
             else:
                 target = os.path.relpath(dst, os.path.dirname(src))
                 self.logger.info("Replacing '%s' with a symlink to '%s'", src, target)
@@ -225,7 +227,7 @@ class MergeUsr:
         return result
 
 def main():
-    logging.basicConfig()
+    logging.basicConfig(format="%(levelname)s: %(message)s")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dryrun", action=argparse.BooleanOptionalAction)
@@ -235,9 +237,9 @@ def main():
 
     args = parser.parse_args()
 
-    loglevel = logging.WARNING
+    loglevel = logging.INFO
     if args.verbose:
-        loglevel = logging.INFO
+        loglevel = logging.DEBUG
 
     root = args.root
     if root is None:
