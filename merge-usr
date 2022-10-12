@@ -12,6 +12,8 @@ import stat
 import sys
 import tempfile
 
+logger = logging.getLogger(__name__)
+
 DIR_MAP = {
     "bin": "usr/bin",
     "sbin": "usr/bin",
@@ -25,6 +27,7 @@ DIR_MAP = {
 IGNORE_PATTERNS = (
     ".keep*",
 )
+
 
 def raise_exists(path):
     raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
@@ -56,15 +59,13 @@ class SkipSymlink(Exception):
     pass
 
 class MergeUsr:
-    def __init__(self, dryrun, root, prefix, dirmap, ignore_patterns, loglevel=logging.WARNING):
+    def __init__(self, dryrun, root, prefix, dirmap, ignore_patterns):
         self.dryrun = dryrun
         self.root = root
         self.prefix = prefix
         self.dirmap = dirmap
         self.ignore_patterns = ignore_patterns
         self.errors = []
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(loglevel)
 
     def ignore_name(self, name):
         return any((fnmatch.fnmatch(name, pattern) for pattern in self.ignore_patterns))
@@ -138,14 +139,14 @@ class MergeUsr:
         replace_with_symlink(src, dst)
 
     def log_compare(self, filetype, src, dst):
-        self.logger.debug("Comparing %s '%s' to '%s'", filetype, src, dst)
+        logger.debug("Comparing %s '%s' to '%s'", filetype, src, dst)
 
     def log_copy(self, filetype, src, dst):
-        self.logger.debug("Copying %s '%s' to '%s'", filetype, src, dst)
+        logger.debug("Copying %s '%s' to '%s'", filetype, src, dst)
 
     def log_error(self, filetype, path, error):
         self.errors.append((filetype, path, error))
-        self.logger.error("Conflict for %s '%s': %s", filetype, path, error)
+        logger.error("Conflict for %s '%s': %s", filetype, path, error)
 
     def copy_tree(self, srcdir, dstdir):
         with os.scandir(srcdir) as entries:
@@ -158,7 +159,7 @@ class MergeUsr:
                     try:
                         self.check_symlink(src, dst)
                     except SkipSymlink:
-                        self.logger.warning("Skipping symlink '%s'", src)
+                        logger.warning("Skipping symlink '%s'", src)
                     except Exception as e:
                         self.log_error("symlink", src, e)
                     else:
@@ -192,37 +193,37 @@ class MergeUsr:
             dst = os.path.join(self.root, self.prefix, self.dirmap[d])
 
             if os.path.islink(src):
-                self.logger.warning("Already a symlink: '%s'", src)
+                logger.warning("Already a symlink: '%s'", src)
                 continue
 
             if not os.path.exists(src):
                 continue
 
             if not os.path.isdir(src):
-                self.logger.warning("Not a directory: '%s'", src)
+                logger.warning("Not a directory: '%s'", src)
                 continue
 
-            self.logger.info("Migrating files from '%s' to '%s'", src, dst)
+            logger.info("Migrating files from '%s' to '%s'", src, dst)
             self.copy_tree(src, dst)
 
             if self.errors:
-                self.logger.error("Leaving '%s' as a directory due to prior errors", src)
+                logger.error("Leaving '%s' as a directory due to prior errors", src)
                 result = False
                 self.errors.clear()
                 continue
 
             if self.dryrun:
-                self.logger.info("No problems found for '%s'", src)
+                logger.info("No problems found for '%s'", src)
             else:
                 target = os.path.relpath(dst, os.path.dirname(src))
-                self.logger.info("Replacing '%s' with a symlink to '%s'", src, target)
+                logger.info("Replacing '%s' with a symlink to '%s'", src, target)
                 tmp = tempfile.mktemp(dir=os.path.dirname(src))
                 os.rename(src, tmp)
                 os.symlink(target, src)
                 try:
                     shutil.rmtree(tmp)
                 except Exception as e:
-                    self.logger.warning("Unable to remove '%s': %s", tmp, e)
+                    logger.warning("Unable to remove '%s': %s", tmp, e)
 
         return result
 
@@ -237,9 +238,10 @@ def main():
 
     args = parser.parse_args()
 
-    loglevel = logging.INFO
     if args.verbose:
-        loglevel = logging.DEBUG
+        logger.setlevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
 
     root = args.root
     if root is None:
@@ -255,7 +257,7 @@ def main():
 
     os.umask(0o077)
 
-    mu = MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS, loglevel=loglevel)
+    mu = MergeUsr(args.dryrun, root, prefix, DIR_MAP, IGNORE_PATTERNS)
     if not mu.run():
         return 1
     return 0
