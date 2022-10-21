@@ -32,11 +32,25 @@ IGNORE_PATTERNS = (
 def raise_exists(path):
     raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
 
+def copy_xattrs(src, dst):
+    try:
+        attrs = os.listxattr(src, follow_symlinks=False)
+    except OSError:
+        return
+    for name in attrs:
+        try:
+            value = os.getxattr(src, name, follow_symlinks=False)
+            os.setxattr(dst, name, value, follow_symlinks=False)
+        except OSError as error:
+            logger.error("Error copying xattr '%s' from '%s' to '%s': %s",
+                         name, src, dst, error)
+
 def replace_with_symlink(src, dst):
     srcdir = os.path.dirname(src)
     target = os.path.relpath(dst, srcdir)
     tmp = tempfile.mktemp(dir=srcdir)
     os.symlink(target, tmp)
+    copy_xattrs(src, tmp)
     os.rename(tmp, src)
 
 def check_directory(path):
@@ -125,6 +139,7 @@ class MergeUsr:
             else:
                 target = os.path.relpath(t, dstdir)
         os.symlink(target, dst)
+        copy_xattrs(src, dst)
 
     def link_or_copy_file(self, src, dst):
         self.log_copy("file", src, dst)
@@ -134,7 +149,7 @@ class MergeUsr:
         except FileExistsError:
             raise
         except OSError:
-            shutil.copy2(src, tmp)
+            shutil.copy2(src, tmp, follow_symlinks=False)
         os.rename(tmp, dst)
         replace_with_symlink(src, dst)
 
@@ -220,6 +235,7 @@ class MergeUsr:
                 tmp = tempfile.mktemp(dir=os.path.dirname(src))
                 os.rename(src, tmp)
                 os.symlink(target, src)
+                copy_xattrs(tmp, src)
                 try:
                     shutil.rmtree(tmp)
                 except Exception as e:
