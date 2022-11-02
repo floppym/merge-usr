@@ -32,26 +32,61 @@ IGNORE_PATTERNS = (
 def raise_exists(path):
     raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
 
-def copy_xattrs(src, dst):
+def get_xattrs(path):
     try:
-        attrs = os.listxattr(src, follow_symlinks=False)
+        attrs = os.listxattr(path, follow_symlinks=False)
     except OSError:
         return
     for name in attrs:
         try:
-            value = os.getxattr(src, name, follow_symlinks=False)
-            os.setxattr(dst, name, value, follow_symlinks=False)
-        except OSError as error:
-            logger.error("Error copying xattr '%s' from '%s' to '%s': %s",
-                         name, src, dst, error)
+            value = os.getxattr(path, name, follow_symlinks=False)
+            yield (name, value)
+        except OSError as e:
+            logger.error("Error getting xattr '%s' from '%s': %s",
+                         name, path, e)
 
-def replace_with_symlink(src, dst):
+def set_xattrs(path, attrs):
+    for (name, value) in attrs:
+        try:
+            os.setxattr(dst, name, value, follow_symlinks=False)
+        except OSError as e:
+            logger.error("Error setting xattr '%s' on '%s': %s",
+                         name, path, e)
+
+def copy_xattrs(src, dst):
+    attrs = get_xattrs(src)
+    set_xattrs(dst, attrs)
+
+def replace_file_with_symlink(src, dst):
     srcdir = os.path.dirname(src)
     target = os.path.relpath(dst, srcdir)
     tmp = tempfile.mktemp(dir=srcdir)
     os.symlink(target, tmp)
     copy_xattrs(src, tmp)
     os.rename(tmp, src)
+
+def replace_directory_with_symlink(src, dst):
+    srcdir = os.path.dirname(src)
+    target = os.path.relpath(dst, srcdir)
+    logger.info("Replacing '%s' with a symlink to '%s'", src, target)
+    attrs = list(get_xattrs(src))
+    tmp = tempfile.mktemp(dir=srcdir)
+    try:
+        os.rename(src, tmp)
+    except OSError as e:
+        # overlayfs returns EXDEV when renaming between layers
+        if e.errno != errno.EXDEV:
+            raise
+        shutil.rmtree(src)
+        tmp = None
+    os.symlink(target, src)
+    if attrs:
+        set_xattrs(src, attrs)
+    if tmp is not None:
+        try:
+            shutil.rmtree(tmp)
+        except Exception as e:
+            logger.warning("Unable to remove '%s': %s", tmp, e)
 
 def check_directory(path):
     try:
@@ -151,7 +186,7 @@ class MergeUsr:
         except OSError:
             shutil.copy2(src, tmp, follow_symlinks=False)
         os.rename(tmp, dst)
-        replace_with_symlink(src, dst)
+        replace_file_with_symlink(src, dst)
 
     def log_compare(self, filetype, src, dst):
         logger.debug("Comparing %s '%s' to '%s'", filetype, src, dst)
@@ -230,16 +265,7 @@ class MergeUsr:
             if self.dryrun:
                 logger.info("No problems found for '%s'", src)
             else:
-                target = os.path.relpath(dst, os.path.dirname(src))
-                logger.info("Replacing '%s' with a symlink to '%s'", src, target)
-                tmp = tempfile.mktemp(dir=os.path.dirname(src))
-                os.rename(src, tmp)
-                os.symlink(target, src)
-                copy_xattrs(tmp, src)
-                try:
-                    shutil.rmtree(tmp)
-                except Exception as e:
-                    logger.warning("Unable to remove '%s': %s", tmp, e)
+                replace_directory_with_symlink(src, dst)
 
         return result
 
