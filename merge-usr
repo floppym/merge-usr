@@ -48,7 +48,7 @@ def get_xattrs(path):
 def set_xattrs(path, attrs):
     for (name, value) in attrs:
         try:
-            os.setxattr(dst, name, value, follow_symlinks=False)
+            os.setxattr(path, name, value, follow_symlinks=False)
         except OSError as e:
             logger.error("Error setting xattr '%s' on '%s': %s",
                          name, path, e)
