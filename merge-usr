@@ -209,7 +209,7 @@ class MergeUsr:
                     try:
                         self.check_symlink(src, dst)
                     except SkipSymlink:
-                        logger.warning("Skipping symlink '%s'", src)
+                        logger.info("Skipping symlink '%s'; '%s' already exists", src, dst)
                     except Exception as e:
                         self.log_error("symlink", src, e)
                     else:
