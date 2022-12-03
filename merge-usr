@@ -243,7 +243,7 @@ class MergeUsr:
             dst = os.path.join(self.root, self.prefix, self.dirmap[d])
 
             if os.path.islink(src):
-                logger.warning("Already a symlink: '%s'", src)
+                logger.info("Already a symlink: '%s'", src)
                 continue
 
             if not os.path.exists(src):
