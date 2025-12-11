@@ -230,8 +230,6 @@ class MergeUsr:
                     except Exception as e:
                         self.log_error("directory", src, e)
                     else:
-                        if not self.dryrun:
-                            ensure_directory(dst)
                         self.copy_tree(src, dst)
                 else:
                     self.log_error("special file", src, "Special files are not supported")
