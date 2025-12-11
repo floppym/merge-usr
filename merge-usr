@@ -97,12 +97,11 @@ def check_directory(path):
         raise_exists(path)
 
 def ensure_directory(path):
+    umask = os.umask(0o022)
     try:
-        os.mkdir(path)
-    except FileExistsError:
-        pass
-    else:
-        os.chmod(path, 0o0755)
+        os.makedirs(path, exist_ok=True)
+    finally:
+        os.umask(umask)
 
 class SkipSymlink(Exception):
     pass
@@ -199,6 +198,8 @@ class MergeUsr:
         logger.error("Conflict for %s '%s': %s", filetype, path, error)
 
     def copy_tree(self, srcdir, dstdir):
+        if not self.dryrun:
+            ensure_directory(dstdir)
         with os.scandir(srcdir) as entries:
             for entry in entries:
                 if self.ignore_name(entry.name):
